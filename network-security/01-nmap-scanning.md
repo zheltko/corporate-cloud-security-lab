@@ -1,39 +1,41 @@
-# Network Scanning: Nmap Analysis
 # Network Scanning & Firewall Behavior Analysis
 
-## Objective
-To verify the effectiveness of the host-based firewall (UFW) on the secondary VM (`kate-labb2`, IP `10.20.0.5`) and understand how it handles different types of traffic (ICMP, open ports, closed ports).
+# Анализ сетевого периметра и поведения межсетевого экрана (UFW)
 
-## Methodology & Tools
-Scanning was performed from the primary VM (`kate-labb`, IP `10.20.0.4`) using `nmap` and `netcat` (nc).
+## Цель исследования
+Провести верификацию эффективности хостового межсетевого экрана (UFW) на вторичной виртуальной машине (`kate-labb2`, IP `10.20.0.5`). Основная задача — на практике подтвердить корректность политики фильтрации `Default Deny Incoming` и оценить уровень скрытности (obscurity) сервера от методов сетевой разведки (Reconnaissance).
 
-## Results & Analysis
+## Методология и инструментарий
+Сканирование и проверка соединений выполнялись с первичной ВМ (`kate-labb`, IP `10.20.0.4`), выступающей в роли сканера (условного атакующего). Использовался стандартный стек утилит: `nmap` (для сетевой разведки) и `netcat` (nc — для проверки доступности конкретных портов). 
 
-### 1. Port Scanning (Nmap)
-**Command:** `sudo nmap -sT -Pn -p- 10.20.0.5`
-**Result:**
-*   **Host is up** (detected despite ICMP block due to `-Pn` flag).
-*   **22/tcp (SSH):** `open`
-*   **All other 65534 ports:** `filtered`
+## Результаты тестирования и технический анализ
 
-**Analysis:** The `-Pn` flag skips host discovery (ping), forcing nmap to scan ports directly. The `filtered` state for all non-SSH ports proves that UFW is configured with a default `DROP` policy. Instead of replying with a "port closed" message (RST), the firewall silently discards the packets, providing no information to the attacker.
+### 1. Полное сканирование портов (Nmap)
+**Выполненная команда:** `sudo nmap -sT -Pn -p- 10.20.0.5`
+**Полученный вывод:**
+*   **Состояние хоста:** `Host is up` (Хост активен).
+*   **Порт 22/tcp (SSH):** `open` (Открыт).
+*   **Остальные 65534 порта:** `filtered` (Отфильтрованы).
 
-### 2. ICMP Ping Test
-**Command:** `ping -c 3 10.20.0.5`
-**Result:** `100% packet loss`
-**Analysis:** UFW drops incoming ICMP echo requests. This prevents simple network discovery and makes the host less visible to automated scanners.
+**Анализ:** 
+Флаг `-Pn` был использован для принудительного пропуска ICMP-проверки (ping), что заставило Nmap перейти сразу к TCP-сканированию. Состояние `filtered` для всех неиспользуемых портов является прямым доказательством работы политики `DROP` в UFW. Вместо того чтобы отвечать пакетом `RST` (сброс соединения) и явно сообщать "порт закрыт", межсетевой экран молча отбрасывает входящие SYN-пакеты. Это существенно повышает безопасность, так как не дает сканеру информации о том, существует ли порт в принципе, или он просто заблокирован.
 
-### 3. Closed Port Connection Test
-**Command:** `nc -zv -w 3 10.20.0.5 80`
-**Result:** `Connection timed out`
-**Analysis:** Port 80 is not open in UFW. The connection attempt times out rather than being explicitly refused. This is the expected behavior for `default deny incoming` (DROP policy), as opposed to `REJECT` which would yield "Connection refused".
+### 2. Проверка ICMP (Ping)
+**Выполненная команда:** `ping -c 3 10.20.0.5`
+**Результат:** `100% packet loss` (100% потери пакетов).
+**Анализ:** UFW успешно блокирует входящие ICMP Echo Requests. Это базовый, но важный элемент защиты. Многие автоматизированные сканеры и боты маскировки (malware) используют пинг для поиска "живых" узлов в сети. Отсутствие ответа на ICMP снижает заметность сервера и замедляет работу злоумышленника при массовой разведке.
 
-### 4. Open Port Connection Test
-**Command:** `nc -zv -w 3 10.20.0.5 22`
-**Result:** `succeeded!`
-**Analysis:** Port 22 is explicitly allowed by UFW rules. The firewall permits the connection, confirming that the intended access control works correctly.
+### 3. Проверка соединения с закрытым портом (TCP)
+**Выполненная команда:** `nc -zv -w 3 10.20.0.5 80`
+**Результат:** `Connection timed out` (Время ожидания истекло).
+**Анализ:** Попытка подключения к 80-му порту (HTTP) не вернула ошибку `Connection refused`. Вместо этого произошел тайм-аут. Это классический признак того, что пакет был отброшен правилом `DROP`. Если бы UFW использовал правило `REJECT` (отклонять), мы бы получили явный отказ. Выбор `DROP` (по умолчанию в UFW) демонстрирует зрелый подход к безопасности: сервер не выдает лишней информации о своем внутреннем состоянии.
 
-## Key Takeaways
-1. **Defense in Depth:** Relying on a cloud Security Group is not enough; a host-based firewall (UFW) provides a crucial second layer of defense.
-2. **DROP vs REJECT:** Using `DROP` (default in UFW deny) hides the existence of closed ports, whereas `REJECT` reveals them. `DROP` is preferred for security.
-3. **Nmap Adaptability:** Attackers will use flags like `-Pn` to bypass ICMP blocks. Security measures must not rely solely on hiding from ping.
+### 4. Проверка соединения с открытым портом (TCP)
+**Выполненная команда:** `nc -zv -w 3 10.20.0.5 22`
+**Результат:** `succeeded!` (Соединение успешно).
+**Анализ:** Порт 22/tcp, который был явно разрешен в правилах UFW, успешно принимает входящие подключения. Это подтверждает, что фильтрация настроена корректно: разрешенное работает, запрещенное — блокируется.
+
+## Ключевые инженерные выводы
+1.  **Эшелонированная оборона (Defense in Depth):** Мы на практике подтвердили, что облачных Security Groups (фильтрация на уровне T1 Cloud) недостаточно для полной безопасности ВМ. Хостовый файрвол (UFW) выступает критически важным вторым рубежом обороны.
+2.  **Асимметрия сетевой разведки:** Использование политики `DROP` вместо `REJECT` и блокировка ICMP делают сервер невидимым для стандартных автоматических сканеров (например, Shodan или базовых скриптов) и вынуждают атакующего использовать методы Active Scanning (с флагами вроде `-Pn`).
+3.  **Доказательство работоспособности:** Проведенный тест является не просто теоретическим упражнением, а практической валидацией (Verification) настроек безопасности. В корпоративной среде такие тесты проводятся регулярно (Vulnerability Assessment) для подтверждения соответствия стандартам (например, CIS Benchmarks).
